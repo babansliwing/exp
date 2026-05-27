@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# 1. Pastikan dijalankan sebagai root
+if [ "$EUID" -ne 0 ]; then
+  echo "Silakan jalankan script ini sebagai root (sudo)."
+  exit 1
+fi
+
+# 2. Hentikan service lama jika ada yang sedang berjalan untuk menghindari bentrok
+echo "Membersihkan service cloudflared lama (jika ada)..."
+systemctl stop cloudflared >/dev/null 2>&1
+systemctl disable cloudflared >/dev/null 2>&1
+rm -f /etc/systemd/system/cloudflared.service
+
+# 3. Download biner cloudflared terbaru jika belum ada
+if [ ! -f /usr/local/bin/cloudflared ]; then
+    echo "Mengunduh cloudflared terbaru..."
+    wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
+fi
+
+# 4. Input Token dari User
+echo -n "Masukkan Token Cloudflare Tunnel Anda: "
+read -r TUNNEL_TOKEN
+
+if [ -z "$TUNNEL_TOKEN" ]; then
+    echo "Error: Token tidak boleh kosong!"
+    exit 1
+fi
+
+# 5. Membuat systemd service dengan Protokol TCP (HTTP2) bawaan mendahului masalah QUIC
+echo "Membuat systemd service..."
+cat <<EOF > /etc/systemd/system/cloudflared.service
+[Unit]
+Description=Cloudflare Tunnel Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# Menggunakan token langsung pada ExecStart dan memaksa protokol HTTP2 (TCP port 443)
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --protocol http2 --token ${TUNNEL_TOKEN}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 6. Mengaktifkan dan Menjalankan Service
+echo "Memuat ulang systemd dan menjalankan service..."
+systemctl daemon-reload
+systemctl enable cloudflared
+systemctl start cloudflared
+
+echo "------------------------------------------------"
+echo "Selesai! Cloudflared berhasil dikonfigurasi dan dijalankan via HTTP2 (TCP)."
+echo "Silakan cek status koneksi dengan: systemctl status cloudflared"
