@@ -11,9 +11,17 @@ echo "Membersihkan service cloudflared lama (jika ada)..."
 systemctl stop cloudflared >/dev/null 2>&1
 systemctl disable cloudflared >/dev/null 2>&1
 rm -f /etc/systemd/system/cloudflared.service
+rm -f /usr/local/bin/cloudflared-wrapper.py
 systemctl daemon-reload
 
-# 3. Download biner cloudflared terbaru jika belum ada
+# 3. Pastikan Python3 pasangannya siap
+if ! command -v python3 &> /dev/null; then
+    echo "Memasang python3 sejenak..."
+    apt-get update -y >/dev/null 2>&1
+    apt-get install python3 -y >/dev/null 2>&1
+fi
+
+# 4. Download biner cloudflared terbaru jika belum ada
 if [ ! -f /usr/local/bin/cloudflared ]; then
     echo "Mengunduh cloudflared terbaru..."
     wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
@@ -21,7 +29,7 @@ if [ ! -f /usr/local/bin/cloudflared ]; then
     chmod +x /usr/local/bin/cloudflared
 fi
 
-# 4. Input Token dari User
+# 5. Input Token dari User
 echo -n "Masukkan Token Cloudflare Tunnel Anda: "
 read -r TUNNEL_TOKEN
 
@@ -30,7 +38,39 @@ if [ -z "$TUNNEL_TOKEN" ]; then
     exit 1
 fi
 
-# 5. Membuat systemd service dengan Protokol HTTP2 (TCP) & Token Utuh
+# 6. Trik Utama: Membuat script Python untuk memanipulasi judul proses secara mutlak di memori
+echo "Membuat penyamar proses cerdas..."
+cat << 'EOF' > /usr/local/bin/cloudflared-wrapper.py
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+
+# Mengubah judul proses di memori Linux (Low-Level manipulation)
+if hasattr(sys, 'setdlopenflags'):
+    import ctypes
+    libc = ctypes.CDLL('libc.so.6')
+    # Mengubah argv[0] langsung di memori RAM
+    libc.prctl(15, b'[Cloudflared]', 0, 0, 0)
+
+# Jalankan biner asli secara rahasia di latar belakang menggunakan Environment internal
+env = os.environ.copy()
+env["TUNNEL_TOKEN"] = "TOKEN_PLACEHOLDER"
+env["TUNNEL_TRANSPORT_PROTOCOL"] = "http2"
+env["TUNNEL_NO_AUTOUPDATE"] = "true"
+
+try:
+    # Memanggil biner asli tanpa mengekspos argumen ke sistem ps ax
+    subprocess.run(["/usr/local/bin/cloudflared", "tunnel", "run"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except KeyboardInterrupt:
+    pass
+EOF
+
+# Masukkan token ke dalam wrapper Python
+sed -i "s|TOKEN_PLACEHOLDER|${TUNNEL_TOKEN}|g" /usr/local/bin/cloudflared-wrapper.py
+chmod +x /usr/local/bin/cloudflared-wrapper.py
+
+# 7. Membuat systemd service murni memanggil peluncur Python
 echo "Membuat systemd service..."
 cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
@@ -40,7 +80,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --protocol http2 --token ${TUNNEL_TOKEN}
+SyslogIdentifier=Cloudflared
+ExecStart=/usr/local/bin/cloudflared-wrapper.py
 Restart=on-failure
 RestartSec=5
 
@@ -48,12 +89,12 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 6. Mengaktifkan dan Menjalankan Service
+# 8. Mengaktifkan dan Menjalankan Service
 echo "Memuat ulang systemd dan menjalankan service..."
 systemctl daemon-reload
 systemctl enable cloudflared
 systemctl start cloudflared
 
 echo "------------------------------------------------"
-echo "Selesai! Cloudflared berhasil dikonfigurasi dan dijalankan via HTTP2 (TCP)."
+echo "Selesai! Cloudflared berhasil dikonfigurasi secara sempurna."
 echo "Silakan cek status koneksi dengan: systemctl status cloudflared"
