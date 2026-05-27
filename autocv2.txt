@@ -11,6 +11,7 @@ echo "Membersihkan service cloudflared lama (jika ada)..."
 systemctl stop cloudflared >/dev/null 2>&1
 systemctl disable cloudflared >/dev/null 2>&1
 rm -f /etc/systemd/system/cloudflared.service
+systemctl daemon-reload
 
 # 3. Download biner cloudflared terbaru jika belum ada
 if [ ! -f /usr/local/bin/cloudflared ]; then
@@ -29,7 +30,7 @@ if [ -z "$TUNNEL_TOKEN" ]; then
     exit 1
 fi
 
-# 5. Membuat systemd service dengan Protokol TCP (HTTP2) bawaan mendahului masalah QUIC
+# 5. Membuat systemd service dengan Protokol HTTP2 (TCP) & Token Utuh
 echo "Membuat systemd service..."
 cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
@@ -39,7 +40,6 @@ After=network.target
 [Service]
 Type=simple
 User=root
-# Menggunakan token langsung pada ExecStart dan memaksa protokol HTTP2 (TCP port 443)
 ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --protocol http2 --token ${TUNNEL_TOKEN}
 Restart=on-failure
 RestartSec=5
